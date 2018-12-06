@@ -3,6 +3,7 @@ menu "DFUFLASH custom app"
 config APP_DFUFLASH
   bool "Flash App"
   depends on STM32F4
+  select USR_DRV_FLASH
   default y
   select USR_LIB_WOOKEY
   ---help---
