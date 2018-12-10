@@ -17,7 +17,7 @@
  * without compiler complain. argc/argv is not a goot idea in term
  * of size and calculation in a microcontroler
  */
-#define FLASH_DEBUG 0
+#define FLASH_DEBUG 1
 #define FLASH_BUF_SIZE 4096
 uint8_t flash_buf[FLASH_BUF_SIZE] = { 0 };
 
@@ -173,8 +173,8 @@ int _main(uint32_t task_id)
                   {
                     dataplane_command_wr = ipc_mainloop_cmd.dataplane_cmd;
 #if FLASH_DEBUG
-                    printf("!!!!!!!!!!! received DMA write command to FLASH: @:%x size: %d\n",
-
+                    printf("!!!!!!!!!!! received DMA write command to FLASH: @:%x size: <todo>\n",
+                            dataplane_command_wr.num_sectors);
 #endif
                     dataplane_command_ack.magic = MAGIC_DATA_WR_DMA_ACK;
 
