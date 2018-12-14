@@ -178,7 +178,11 @@ int _main(uint32_t task_id)
 #endif
                     dataplane_command_ack.magic = MAGIC_DATA_WR_DMA_ACK;
 
-                    sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(struct dataplane_command), (const char*)&dataplane_command_ack);
+                    ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(struct dataplane_command), (const char*)&dataplane_command_ack);
+
+                    if (ret != SYS_E_DONE) {
+                        printf("Error ! unable to send back DMA_WR_ACK to crypto!\n");
+                    }
                     break;
 
                   }
@@ -196,7 +200,12 @@ int _main(uint32_t task_id)
 
                     dataplane_command_ack.magic = MAGIC_DATA_RD_DMA_ACK;
 
-                    sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(struct dataplane_command), (const char*)&dataplane_command_ack);
+                    ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(struct dataplane_command), (const char*)&dataplane_command_ack);
+
+                    if (ret != SYS_E_DONE) {
+                        printf("Error ! unable to send back DMA_WR_ACK to crypto!\n");
+                    }
+                    break;
                     break;
 
                   }
