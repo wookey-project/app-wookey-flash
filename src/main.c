@@ -20,7 +20,7 @@ uint32_t total_read = 0;
  * without compiler complain. argc/argv is not a goot idea in term
  * of size and calculation in a microcontroler
  */
-#define FLASH_DEBUG 0
+#define FLASH_DEBUG 1
 #define FLASH_BUF_SIZE 4096
 #define FLASH_SIZE 800000 // 800K flash size, test size
 uint8_t flash_buf[FLASH_BUF_SIZE] = { 0 };
@@ -156,6 +156,8 @@ int _main(uint32_t task_id)
      * Main waiting loopt. The task main thread is awoken by any external
      * event such as ISR or IPC.
      */
+      // FIXME:
+      uint32_t buffer_count = 0;
       struct sync_command_data dataplane_command_wr;
       struct sync_command_data dataplane_command_ack = { 0 };
       t_ipc_command ipc_mainloop_cmd = { 0 };
@@ -179,6 +181,12 @@ int _main(uint32_t task_id)
 #if FLASH_DEBUG
                       printf("!!!!!!!!!!! received DMA write command to FLASH: blocknum:%x size: %x\n",
                               dataplane_command_wr.data.u16[1], dataplane_command_wr.data.u16[0]);
+
+                      if (buffer_count < 2) {
+                          printf("received buffer (4 start, 4 end)\n");
+                          hexdump(flash_buf, 4);
+                          hexdump(flash_buf+4092, 4);
+                      }
 #endif
                       /*returning the number of bytes read */
                       dataplane_command_ack.magic = MAGIC_DATA_WR_DMA_ACK;
@@ -190,6 +198,7 @@ int _main(uint32_t task_id)
                       if (ret != SYS_E_DONE) {
                           printf("Error ! unable to send back DMA_WR_ACK to crypto!\n");
                       }
+                      buffer_count++;
                       break;
 
                   }
