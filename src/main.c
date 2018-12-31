@@ -8,6 +8,7 @@
 #include "api/syscall.h"
 #include "api/print.h"
 #include "wookey_ipc.h"
+#include "libfw.h"
 
 uint16_t blocknum = 0;
 uint32_t total_read = 0;
@@ -24,6 +25,10 @@ uint32_t total_read = 0;
 #define FLASH_BUF_SIZE 4096
 #define FLASH_SIZE 800000 // 800K flash size, test size
 uint8_t flash_buf[FLASH_BUF_SIZE] = { 0 };
+
+#define CRC 1
+
+uint32_t crc_value = 0xffffffff;
 
 int _main(uint32_t task_id)
 {
@@ -180,13 +185,20 @@ int _main(uint32_t task_id)
                       dataplane_command_wr = ipc_mainloop_cmd.sync_cmd_data;
 #if FLASH_DEBUG
                       printf("!!!!!!!!!!! received DMA write command to FLASH: blocknum:%x size: %x\n",
-                              dataplane_command_wr.data.u16[1], dataplane_command_wr.data.u16[0]);
-
+                              (uint16_t)dataplane_command_wr.data.u16[1], (uint16_t)dataplane_command_wr.data.u16[0]);
+/*
                       if (buffer_count < 2) {
                           printf("received buffer (4 start, 4 end)\n");
                           hexdump(flash_buf, 4);
                           hexdump(flash_buf+4092, 4);
                       }
+*/
+#endif
+#if CRC
+			crc_value = crc32(flash_buf, dataplane_command_wr.data.u16[0], crc_value);
+#if FLASH_DEBUG
+			printf("[CRC32] current crc is %x\n", crc_value ^ 0xffffffff);
+#endif
 #endif
                       /*returning the number of bytes read */
                       dataplane_command_ack.magic = MAGIC_DATA_WR_DMA_ACK;
