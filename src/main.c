@@ -21,7 +21,7 @@ uint32_t total_read = 0;
  * without compiler complain. argc/argv is not a goot idea in term
  * of size and calculation in a microcontroler
  */
-#define FLASH_DEBUG 1
+#define FLASH_DEBUG 0
 #define FLASH_BUF_SIZE 4096
 #define FLASH_SIZE 800000 // 800K flash size, test size
 uint8_t flash_buf[FLASH_BUF_SIZE] = { 0 };
