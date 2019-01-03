@@ -70,6 +70,8 @@ int _main(uint32_t task_id)
     ret = sys_init(INIT_DMA_SHM, &dmashm_wr);
     printf("sys_init returns %s !\n", strerror(ret));
 
+    firmware_early_init();
+
     /*******************************************
      * End of init
      *******************************************/
@@ -117,7 +119,7 @@ int _main(uint32_t task_id)
     }
 
     /* init phase of drivers/libs */
-    // flash_init();
+    firmware_init();
 
     ipc_sync_cmd.magic = MAGIC_TASK_STATE_RESP;
     ipc_sync_cmd.state = SYNC_READY;

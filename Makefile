@@ -30,7 +30,7 @@ LDFLAGS += $(AFLAGS) -fno-builtin -nostdlib -nostartfiles
 
 EXTRA_LDFLAGS ?= -Tdfuflash.fw1.ld
 LDFLAGS += $(EXTRA_LDFLAGS) -L$(APP_BUILD_DIR) -fno-builtin -nostdlib
-LD_LIBS += -lstd -lfirmware -L$(APP_BUILD_DIR)
+LD_LIBS += -lstd -lfirmware -lflash -L$(APP_BUILD_DIR)
 
 BUILD_DIR ?= $(PROJ_FILE)build
 
