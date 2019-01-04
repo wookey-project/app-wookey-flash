@@ -169,6 +169,16 @@ int _main(uint32_t task_id)
       struct sync_command_data dataplane_command_ack = { 0 };
       t_ipc_command ipc_mainloop_cmd = { 0 };
 
+      volatile physaddr_t addr = 0;
+      if (is_in_flip_mode()) {
+          addr = 0x08120000;
+      } else if (is_in_flop_mode()) {
+          addr = 0x08020000;
+      } else {
+          printf("neither in flip or flop mode !!! leaving !\n");
+          goto err;
+      }
+
       while (1) {
           uint8_t id = id_dfucrypto;
           logsize_t size = sizeof(struct sync_command_data);
@@ -202,6 +212,11 @@ int _main(uint32_t task_id)
 			printf("[CRC32] current crc is %x\n", crc_value ^ 0xffffffff);
 #endif
 #endif
+            /* let's write ! */
+            uint32_t bufsize = (uint32_t)dataplane_command_wr.data.u16[0];
+            fw_storage_write_buffer(addr, (uint64_t*)flash_buf, bufsize);
+            addr += bufsize;
+                      
                       /*returning the number of bytes read */
                       dataplane_command_ack.magic = MAGIC_DATA_WR_DMA_ACK;
                       dataplane_command_ack.data.u16[0] = dataplane_command_wr.data.u16[0];
@@ -269,5 +284,7 @@ int _main(uint32_t task_id)
       }
 
     return 0;
+err:
+    return 1;
 }
 
