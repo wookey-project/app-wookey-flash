@@ -179,6 +179,7 @@ int _main(uint32_t task_id)
           goto err;
       }
 
+      bool flash_is_mapped = false;
       while (1) {
           uint8_t id = id_dfucrypto;
           logsize_t size = sizeof(struct sync_command_data);
@@ -214,7 +215,11 @@ int _main(uint32_t task_id)
 #endif
             /* let's write ! */
             uint32_t bufsize = (uint32_t)dataplane_command_wr.data.u16[0];
-            fw_storage_write_buffer(addr, (uint64_t*)flash_buf, bufsize);
+            if (!flash_is_mapped) {
+                fw_storage_prepare_access();
+                flash_is_mapped = true;
+            }
+            fw_storage_write_buffer(addr, (uint32_t*)flash_buf, bufsize);
             addr += bufsize;
                       
                       /*returning the number of bytes read */
@@ -270,6 +275,16 @@ int _main(uint32_t task_id)
                     break;
 
                   }
+
+            case MAGIC_DFU_DWNLOAD_FINISHED:
+                {
+#if CRYPTO_DEBUG
+                    printf("receiving EOF from DFUUSB\n");
+#endif
+                    fw_storage_finalize_access();
+
+                    break;
+                }
 
 
               default:
