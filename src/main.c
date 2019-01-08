@@ -282,6 +282,14 @@ int _main(uint32_t task_id)
                     printf("receiving EOF from DFUUSB\n");
 #endif
                     fw_storage_finalize_access();
+                    dataplane_command_ack.magic = MAGIC_DFU_WRITE_FINISHED;
+                    dataplane_command_ack.state = SYNC_DONE;
+
+                    ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(struct sync_command), (const char*)&dataplane_command_ack);
+
+                    if (ret != SYS_E_DONE) {
+                        printf("Error ! unable to send back DFU_WRITE_FINISHED to crypto!\n");
+                    }
 
                     break;
                 }
