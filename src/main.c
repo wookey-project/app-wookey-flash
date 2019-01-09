@@ -23,7 +23,10 @@ uint32_t total_read = 0;
  */
 #define FLASH_DEBUG 0
 #define FLASH_BUF_SIZE 4096
-#define FLASH_SIZE 800000 // 800K flash size, test size
+#define FLASH_FLOP_ADDR 0x08120000
+#define FLASH_FLIP_ADDR 0x08020000
+/* FIXME: this size should be read from the layout preprocessing */
+#define FLASH_SIZE 0xe0000 // fw+dfu size (without SHR & bootloader)
 uint8_t flash_buf[FLASH_BUF_SIZE] = { 0 };
 
 #define CRC 1
@@ -36,14 +39,19 @@ int _main(uint32_t task_id)
     char *wellcome_msg = "hello, I'm flash";
     struct sync_command ipc_sync_cmd;
     uint8_t id_dfucrypto;
+    uint8_t id_dfusmart;
     uint8_t id;
     dma_shm_t dmashm_rd;
     dma_shm_t dmashm_wr;
+
+    dma_shm_t dmashm_flash;
 
     printf("%s, my id is %x\n", wellcome_msg, task_id);
 
     ret = sys_init(INIT_GETTASKID, "dfucrypto", &id_dfucrypto);
     printf("dfucrypto is task %x !\n", id_dfucrypto);
+    ret = sys_init(INIT_GETTASKID, "dfusmart", &id_dfusmart);
+    printf("dfusmart is task %x !\n", id_dfusmart);
 
     /*********************************************
      * Declaring DMA Shared Memory with Crypto
@@ -71,6 +79,28 @@ int _main(uint32_t task_id)
     printf("sys_init returns %s !\n", strerror(ret));
 
     firmware_early_init();
+
+    /* now that firmware backend is declared, we have to
+     * share the flash area with smart to allow it to check
+     * the written firmware signature at the end */
+    dmashm_flash.target = id_dfusmart;
+    dmashm_flash.source = task_id;
+    if (is_in_flip_mode()) {
+    dmashm_flash.address = (physaddr_t)FLASH_FLOP_ADDR;
+    } else if (is_in_flop_mode()) {
+    dmashm_flash.address = (physaddr_t)FLASH_FLIP_ADDR;
+    } else {
+        printf("error: neither flip or flop mode detected!\n");
+        goto err;
+    }
+    dmashm_flash.size = FLASH_SIZE;
+    /* Crypto DMA will write into this buffer */
+    dmashm_flash.mode = DMA_SHM_ACCESS_RD;
+
+    printf("Declaring DMA_SHM for FLASH memory device\n");
+    ret = sys_init(INIT_DMA_SHM, &dmashm_flash);
+    printf("sys_init returns %s !\n", strerror(ret));
+
 
     /*******************************************
      * End of init
@@ -221,7 +251,7 @@ int _main(uint32_t task_id)
             }
             fw_storage_write_buffer(addr, (uint32_t*)flash_buf, bufsize);
             addr += bufsize;
-                      
+
                       /*returning the number of bytes read */
                       dataplane_command_ack.magic = MAGIC_DATA_WR_DMA_ACK;
                       dataplane_command_ack.data.u16[0] = dataplane_command_wr.data.u16[0];
