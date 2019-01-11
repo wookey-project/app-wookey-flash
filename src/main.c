@@ -10,7 +10,6 @@
 #include "wookey_ipc.h"
 #include "libfw.h"
 
-uint16_t blocknum = 0;
 uint32_t total_read = 0;
 
 /*
@@ -21,7 +20,7 @@ uint32_t total_read = 0;
  * without compiler complain. argc/argv is not a goot idea in term
  * of size and calculation in a microcontroler
  */
-#define FLASH_DEBUG 0
+#define FLASH_DEBUG 1
 #define FLASH_BUF_SIZE 4096
 #define FLASH_FLOP_ADDR 0x08120000
 #define FLASH_FLIP_ADDR 0x08020000
@@ -31,7 +30,10 @@ uint8_t flash_buf[FLASH_BUF_SIZE] = { 0 };
 
 #define CRC 1
 
-uint32_t crc_value = 0xffffffff;
+#ifdef CRC
+volatile uint32_t crc_value = 0xffffffff;
+volatile uint16_t block_num = 0;
+#endif
 
 int _main(uint32_t task_id)
 {
@@ -190,7 +192,7 @@ int _main(uint32_t task_id)
 
 
     /*
-     * Main waiting loopt. The task main thread is awoken by any external
+     * Main waiting loop. The task main thread is awoken by any external
      * event such as ISR or IPC.
      */
       // FIXME:
@@ -199,11 +201,12 @@ int _main(uint32_t task_id)
       struct sync_command_data dataplane_command_ack = { 0 };
       t_ipc_command ipc_mainloop_cmd = { 0 };
 
+      volatile physaddr_t addr_base = 0;
       volatile physaddr_t addr = 0;
       if (is_in_flip_mode()) {
-          addr = 0x08120000;
+          addr_base = 0x08120000;
       } else if (is_in_flop_mode()) {
-          addr = 0x08020000;
+          addr_base = 0x08020000;
       } else {
           printf("neither in flip or flop mode !!! leaving !\n");
           goto err;
@@ -226,6 +229,7 @@ int _main(uint32_t task_id)
               case MAGIC_DATA_WR_DMA_REQ:
                   {
                       dataplane_command_wr = ipc_mainloop_cmd.sync_cmd_data;
+		      block_num =  (uint16_t)dataplane_command_wr.data.u16[1];
 #if FLASH_DEBUG
                       printf("!!!!!!!!!!! received DMA write command to FLASH: blocknum:%x size: %x\n",
                               (uint16_t)dataplane_command_wr.data.u16[1], (uint16_t)dataplane_command_wr.data.u16[0]);
@@ -240,7 +244,7 @@ int _main(uint32_t task_id)
 #if CRC
 			crc_value = crc32(flash_buf, dataplane_command_wr.data.u16[0], crc_value);
 #if FLASH_DEBUG
-			printf("[CRC32] current crc is %x\n", crc_value ^ 0xffffffff);
+			printf("[CRC32] current crc is %x (chunk %x)\n", crc_value ^ 0xffffffff, block_num);
 #endif
 #endif
             /* let's write ! */
@@ -249,8 +253,11 @@ int _main(uint32_t task_id)
                 fw_storage_prepare_access();
                 flash_is_mapped = true;
             }
+	    addr = addr_base + (block_num * FLASH_BUF_SIZE);
+#if FLASH_DEBUG
+	    printf("Writing flash @%x, firmware block %d\n", addr, block_num);
+#endif
             fw_storage_write_buffer(addr, (uint32_t*)flash_buf, bufsize);
-            addr += bufsize;
 
                       /*returning the number of bytes read */
                       dataplane_command_ack.magic = MAGIC_DATA_WR_DMA_ACK;
@@ -272,23 +279,22 @@ int _main(uint32_t task_id)
                       uint16_t read_data = 0;
                       uint32_t prev_total = total_read;
                       dataplane_command_wr = ipc_mainloop_cmd.sync_cmd_data;
+		      block_num = dataplane_command_wr.data.u16[1];
 #if FLASH_DEBUG
 
                       printf("!!!!!!!!!!! received DMA read command to FLASH: blocknum:%x size: %x\n",
-                              blocknum, dataplane_command_wr.data.u16[0]);
+                              dataplane_command_wr.data.u16[1], dataplane_command_wr.data.u16[0]);
 #endif
                       total_read += dataplane_command_wr.data.u16[0];
                       if (total_read > FLASH_SIZE) {
                           /* reinit for next upload if needed */
                           total_read = 0;
-                          blocknum = 0;
                           read_data = FLASH_SIZE - prev_total;
 #if FLASH_DEBUG
                           printf("end of flash read, residual size is %x\n", read_data);
 #endif
                       } else {
                           read_data = dataplane_command_wr.data.u16[0];
-                          blocknum  += 1;
                       }
                       // read request.... let's read then...
 
