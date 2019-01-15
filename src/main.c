@@ -20,12 +20,8 @@ uint32_t total_read = 0;
  * without compiler complain. argc/argv is not a goot idea in term
  * of size and calculation in a microcontroler
  */
-#define FLASH_DEBUG 1
+#define FLASH_DEBUG 0
 #define FLASH_BUF_SIZE 4096
-#define FLASH_FLOP_ADDR 0x08120000
-#define FLASH_FLIP_ADDR 0x08020000
-/* FIXME: this size should be read from the layout preprocessing */
-#define FLASH_SIZE 0xe0000 // fw+dfu size (without SHR & bootloader)
 
 /* NOTE: alignment due to DMA */
 __attribute__((aligned(4))) uint8_t flash_buf[FLASH_BUF_SIZE] = { 0 };
@@ -56,6 +52,22 @@ int _main(uint32_t task_id)
     printf("dfucrypto is task %x !\n", id_dfucrypto);
     ret = sys_init(INIT_GETTASKID, "dfusmart", &id_dfusmart);
     printf("dfusmart is task %x !\n", id_dfusmart);
+
+    /* Partition mode detection and flash base address and size computation */
+    volatile physaddr_t addr_base = 0;
+    volatile physaddr_t addr = 0;
+    volatile uint32_t flash_size = 0;
+    if (is_in_flip_mode()) {
+        addr_base = 0x08120000;
+        flash_size = firmware_get_flop_size();
+    } else if (is_in_flop_mode()) {
+        addr_base = 0x08020000;
+        flash_size = firmware_get_flip_size();
+    } else {
+        printf("neither in flip or flop mode !!! leaving !\n");
+        goto err;
+    }
+
 
     /*********************************************
      * Declaring DMA Shared Memory with Crypto
@@ -90,14 +102,14 @@ int _main(uint32_t task_id)
     dmashm_flash.target = id_dfusmart;
     dmashm_flash.source = task_id;
     if (is_in_flip_mode()) {
-    dmashm_flash.address = (physaddr_t)FLASH_FLOP_ADDR;
+        dmashm_flash.address = (physaddr_t)firmware_get_flop_base_addr();
     } else if (is_in_flop_mode()) {
-    dmashm_flash.address = (physaddr_t)FLASH_FLIP_ADDR;
+        dmashm_flash.address = (physaddr_t)firmware_get_flip_base_addr();
     } else {
         printf("error: neither flip or flop mode detected!\n");
         goto err;
     }
-    dmashm_flash.size = FLASH_SIZE;
+    dmashm_flash.size = flash_size;
     /* Crypto DMA will write into this buffer */
     dmashm_flash.mode = DMA_SHM_ACCESS_RD;
 
@@ -203,17 +215,6 @@ int _main(uint32_t task_id)
       struct sync_command_data dataplane_command_ack = { 0 };
       t_ipc_command ipc_mainloop_cmd = { 0 };
 
-      volatile physaddr_t addr_base = 0;
-      volatile physaddr_t addr = 0;
-      if (is_in_flip_mode()) {
-          addr_base = 0x08120000;
-      } else if (is_in_flop_mode()) {
-          addr_base = 0x08020000;
-      } else {
-          printf("neither in flip or flop mode !!! leaving !\n");
-          goto err;
-      }
-
       bool flash_is_mapped = false;
       while (1) {
           uint8_t id = id_dfucrypto;
@@ -288,10 +289,10 @@ int _main(uint32_t task_id)
                               dataplane_command_wr.data.u16[1], dataplane_command_wr.data.u16[0]);
 #endif
                       total_read += dataplane_command_wr.data.u16[0];
-                      if (total_read > FLASH_SIZE) {
+                      if (total_read > flash_size) {
                           /* reinit for next upload if needed */
                           total_read = 0;
-                          read_data = FLASH_SIZE - prev_total;
+                          read_data = flash_size - prev_total;
 #if FLASH_DEBUG
                           printf("end of flash read, residual size is %x\n", read_data);
 #endif
