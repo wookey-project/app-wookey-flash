@@ -26,7 +26,9 @@ uint32_t total_read = 0;
 #define FLASH_FLIP_ADDR 0x08020000
 /* FIXME: this size should be read from the layout preprocessing */
 #define FLASH_SIZE 0xe0000 // fw+dfu size (without SHR & bootloader)
-uint8_t flash_buf[FLASH_BUF_SIZE] = { 0 };
+
+/* NOTE: alignment due to DMA */
+__attribute__((aligned(4))) uint8_t flash_buf[FLASH_BUF_SIZE] = { 0 };
 
 #define CRC 1
 
@@ -317,6 +319,7 @@ int _main(uint32_t task_id)
 #if CRYPTO_DEBUG
                     printf("receiving EOF from DFUUSB\n");
 #endif
+
                     fw_storage_finalize_access();
                     dataplane_command_ack.magic = MAGIC_DFU_WRITE_FINISHED;
                     dataplane_command_ack.state = SYNC_DONE;
