@@ -33,6 +33,68 @@ volatile uint32_t crc_value = 0xffffffff;
 volatile uint16_t block_num = 0;
 #endif
 
+
+void init_flash_map(void)
+{
+    if (is_in_flip_mode()) {
+        t_device_mapping devmap = {
+#ifdef CONFIG_WOOKEY
+            .map_flip_shr = 0,
+            .map_flip = 0,
+            .map_flop_shr = 0,
+            .map_flop = 1,
+#else
+# if CONFIG_USR_DRV_FLASH_DUAL_BANK
+            .map_mem_bank1 = 0,
+            .map_mem_bank2 = 1,
+# else
+            .map_mem = 1,
+# endif
+#endif
+            .map_ctrl = 1,
+#ifdef CONFIG_WOOKEY
+            .map_ctrl_2 = 0,
+#endif
+            .map_system = 0,
+            .map_otp = 0,
+            .map_opt_bank1 = 0,
+#if CONFIG_USR_DRV_FLASH_DUAL_BANK
+            .map_opt_bank2 = 1,
+#endif
+        };
+        firmware_early_init(&devmap);
+        // mapping flop
+    } else if (is_in_flop_mode()) {
+        // mapping flip
+        t_device_mapping devmap = {
+#ifdef CONFIG_WOOKEY
+            .map_flip_shr = 0,
+            .map_flip = 1,
+            .map_flop_shr = 0,
+            .map_flop = 0,
+#else
+# if CONFIG_USR_DRV_FLASH_DUAL_BANK
+            .map_mem_bank1 = 1,
+            .map_mem_bank2 = 0,
+# else
+            .map_mem = 1,
+# endif
+#endif
+            .map_ctrl = 1,
+#ifdef CONFIG_WOOKEY
+            .map_ctrl_2 = 0,
+#endif
+            .map_system = 0,
+            .map_otp = 0,
+            .map_opt_bank1 = 1,
+#if CONFIG_USR_DRV_FLASH_DUAL_BANK
+            .map_opt_bank2 = 0,
+#endif
+        };
+        firmware_early_init(&devmap);
+    }
+}
+
 int _main(uint32_t task_id)
 {
     e_syscall_ret ret;
@@ -68,7 +130,6 @@ int _main(uint32_t task_id)
         goto err;
     }
 
-
     /*********************************************
      * Declaring DMA Shared Memory with Crypto
      *********************************************/
@@ -94,7 +155,7 @@ int _main(uint32_t task_id)
     ret = sys_init(INIT_DMA_SHM, &dmashm_wr);
     printf("sys_init returns %s !\n", strerror(ret));
 
-    firmware_early_init();
+    init_flash_map();
 
     /* now that firmware backend is declared, we have to
      * share the flash area with smart to allow it to check
