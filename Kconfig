@@ -4,6 +4,7 @@ config APP_DFUFLASH
   bool "Flash App"
   depends on STM32F4
   select USR_DRV_FLASH
+  select USR_LIB_FIRMWARE
   default y
   select USR_LIB_WOOKEY
   ---help---
@@ -46,7 +47,7 @@ config APP_DFUFLASH_STACKSIZE
     Specify the application stack size, in bytes. By default, set to 8192
     (i.e. 8k). Depending on the number of slots required, and the usage,
     the stack can be bigger or smaller.
-    
+
 config APP_DFUFLASH_PRIO
   int "Application priority"
   default 0
