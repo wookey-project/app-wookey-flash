@@ -82,7 +82,7 @@ $(LIBDEP):
 
 
 # drivers dependencies
-SOCDRVDEP := $(BUILD_DIR)/drivers/libcryp/libflash.a
+SOCDRVDEP := $(BUILD_DIR)/drivers/libflash/libflash.a
 
 socdrvdep: $(SOCDRVDEP)
 
