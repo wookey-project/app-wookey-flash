@@ -274,7 +274,8 @@ int _main(uint32_t task_id)
       uint32_t buffer_count = 0;
       struct sync_command_data dataplane_command_wr;
       struct sync_command_data dataplane_command_ack = { 0 };
-      t_ipc_command ipc_mainloop_cmd = { 0 };
+      t_ipc_command ipc_mainloop_cmd;
+      memset(&ipc_mainloop_cmd, 0, sizeof(t_ipc_command));
 
       bool flash_is_mapped = false;
       while (1) {
