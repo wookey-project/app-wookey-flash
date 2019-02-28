@@ -9,6 +9,8 @@
 #include "api/print.h"
 #include "wookey_ipc.h"
 #include "libfw.h"
+#include "main.h"
+#include "automaton.h"
 
 uint32_t total_read = 0;
 
@@ -20,19 +22,23 @@ uint32_t total_read = 0;
  * without compiler complain. argc/argv is not a goot idea in term
  * of size and calculation in a microcontroler
  */
-#define FLASH_DEBUG 0
 #define FLASH_BUF_SIZE 4096
 
 /* NOTE: alignment due to DMA */
 __attribute__((aligned(4))) uint8_t flash_buf[FLASH_BUF_SIZE] = { 0 };
 
-#define CRC 1
+#define CRC 0
 
 #ifdef CRC
 volatile uint32_t crc_value = 0xffffffff;
 volatile uint16_t block_num = 0;
 #endif
 
+static uint8_t id_dfucrypto;
+static uint8_t id_dfusmart;
+
+static uint32_t flash_size = 0;
+static physaddr_t addr_base = 0;
 
 void init_flash_map(void)
 {
@@ -95,30 +101,9 @@ void init_flash_map(void)
     }
 }
 
-int _main(uint32_t task_id)
+/* Partition mode detection and flash base address and size computation */
+static void get_flash_size(void)
 {
-    e_syscall_ret ret;
-    char *wellcome_msg = "hello, I'm flash";
-    struct sync_command ipc_sync_cmd;
-    uint8_t id_dfucrypto;
-    uint8_t id_dfusmart;
-    uint8_t id;
-    dma_shm_t dmashm_rd;
-    dma_shm_t dmashm_wr;
-
-    dma_shm_t dmashm_flash;
-
-    printf("%s, my id is %x\n", wellcome_msg, task_id);
-
-    ret = sys_init(INIT_GETTASKID, "dfucrypto", &id_dfucrypto);
-    printf("dfucrypto is task %x !\n", id_dfucrypto);
-    ret = sys_init(INIT_GETTASKID, "dfusmart", &id_dfusmart);
-    printf("dfusmart is task %x !\n", id_dfusmart);
-
-    /* Partition mode detection and flash base address and size computation */
-    volatile physaddr_t addr_base = 0;
-    volatile physaddr_t addr = 0;
-    volatile uint32_t flash_size = 0;
     if (is_in_flip_mode()) {
         addr_base = 0x08120000;
         flash_size = firmware_get_flop_size();
@@ -127,8 +112,230 @@ int _main(uint32_t task_id)
         flash_size = firmware_get_flip_size();
     } else {
         printf("neither in flip or flop mode !!! leaving !\n");
-        goto err;
     }
+}
+
+
+/*
+ * This is the main loop function, from which the task should not leave
+ */
+static void main_loop(void)
+{
+    uint8_t ret;
+    uint32_t buffer_count = 0;
+    struct sync_command_data dataplane_command_wr;
+    struct sync_command_data dataplane_command_ack = { 0 };
+    t_ipc_command ipc_mainloop_cmd;
+    volatile physaddr_t addr = 0;
+    bool flash_is_mapped = false;
+    uint8_t id = id_dfucrypto;
+
+    memset(&ipc_mainloop_cmd, 0, sizeof(t_ipc_command));
+
+    while (1) {
+        /* initialize logsize to current binary buffer size */
+        logsize_t size = sizeof(struct sync_command_data);
+
+        ret = sys_ipc(IPC_RECV_SYNC, &id, &size, (char*)&ipc_mainloop_cmd);
+        if (ret != SYS_E_DONE) {
+            /* This may happen only if DFUCRYPTO is also in receive state.
+             * If it is a DENIED return, check the application permissions
+            */
+            continue;
+        }
+
+        /****************************************************
+         * let's process what we have received...
+         ****************************************************/
+        switch (ipc_mainloop_cmd.magic) {
+
+            /* Write command request */
+            case MAGIC_DATA_WR_DMA_REQ:
+                {
+                    /******* Automaton handling *********/
+
+                    /* checking transition */
+                    if (is_valid_transition(get_task_state(), (uint8_t)MAGIC_DATA_WR_DMA_REQ) != sectrue) {
+                        goto bad_transition;
+                    }
+                    /* updating task state if needed */
+                    uint8_t next_state = get_next_state(get_task_state(), (uint8_t)MAGIC_DATA_WR_DMA_REQ);
+                    if (next_state != 0xff) {
+                        set_task_state(next_state);
+                    }
+
+                    /******** executing transition ******/
+                    dataplane_command_wr = ipc_mainloop_cmd.sync_cmd_data;
+                    block_num =  (uint16_t)dataplane_command_wr.data.u16[1];
+#if FLASH_DEBUG
+                    printf("received DMA write command to FLASH: blocknum:%x size: %x\n",
+                            (uint16_t)dataplane_command_wr.data.u16[1], (uint16_t)dataplane_command_wr.data.u16[0]);
+#endif
+#if CRC
+                    crc_value = crc32(flash_buf, dataplane_command_wr.data.u16[0], crc_value);
+#if FLASH_DEBUG
+                    printf("[CRC32] current crc is %x (chunk %x)\n", crc_value ^ 0xffffffff, block_num);
+#endif
+#endif
+                    /* let's write ! */
+                    uint32_t bufsize = (uint32_t)dataplane_command_wr.data.u16[0];
+                    if (!flash_is_mapped) {
+                        fw_storage_prepare_access();
+                        flash_is_mapped = true;
+                    }
+                    addr = addr_base + (block_num * FLASH_BUF_SIZE);
+#if FLASH_DEBUG
+                    printf("Writing flash @%x, firmware block %d\n", addr, block_num);
+#endif
+                    fw_storage_write_buffer(addr, (uint32_t*)flash_buf, bufsize);
+
+                    /*returning the number of bytes read */
+                    dataplane_command_ack.magic = MAGIC_DATA_WR_DMA_ACK;
+                    dataplane_command_ack.data.u16[0] = dataplane_command_wr.data.u16[0];
+                    dataplane_command_ack.data_size = 1;
+
+                    ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(struct sync_command_data), (const char*)&dataplane_command_ack);
+
+                    if (ret != SYS_E_DONE) {
+                        printf("Error ! unable to send back DMA_WR_ACK to crypto!\n");
+                    }
+                    buffer_count++;
+                    break;
+                }
+
+            /* Read command request */
+            case MAGIC_DATA_RD_DMA_REQ:
+                {
+                    /******* Automaton handling *********/
+
+                    /* checking transition */
+                    if (is_valid_transition(get_task_state(), (uint8_t)MAGIC_DATA_RD_DMA_REQ) != sectrue) {
+                        goto bad_transition;
+                    }
+                    /* updating task state if needed */
+                    uint8_t next_state = get_next_state(get_task_state(), (uint8_t)MAGIC_DATA_RD_DMA_REQ);
+                    if (next_state != 0xff) {
+                        set_task_state(next_state);
+                    }
+
+                    /******** executing transition ******/
+                    uint16_t read_data = 0;
+                    uint32_t prev_total = total_read;
+                    dataplane_command_wr = ipc_mainloop_cmd.sync_cmd_data;
+                    block_num = dataplane_command_wr.data.u16[1];
+#if FLASH_DEBUG
+
+                    printf("received DMA read command to FLASH: blocknum:%x size: %x\n",
+                            dataplane_command_wr.data.u16[1], dataplane_command_wr.data.u16[0]);
+#endif
+                    total_read += dataplane_command_wr.data.u16[0];
+                    if (total_read > flash_size) {
+                        /* reinit for next upload if needed */
+                        total_read = 0;
+                        read_data = flash_size - prev_total;
+#if FLASH_DEBUG
+                        printf("end of flash read, residual size is %x\n", read_data);
+#endif
+                    } else {
+                        read_data = dataplane_command_wr.data.u16[0];
+                    }
+                    /* read request.... by now not implemented as it is a security risk,
+                     * we transparently return as if we have read data, without updating the
+                     * buffer.
+                     * INFO: the libdfu support UPLOAD mode, but dfuflash is keeped voluntary
+                     * simplier by now */
+
+                    /*returning the number of bytes read */
+                    dataplane_command_ack.magic = MAGIC_DATA_RD_DMA_ACK;
+                    dataplane_command_ack.data.u16[0] = read_data;
+                    dataplane_command_ack.data_size = 1;
+
+                    ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(struct sync_command_data), (const char*)&dataplane_command_ack);
+
+                    if (ret != SYS_E_DONE) {
+                        printf("Error ! unable to send back DMA_WR_ACK to crypto!\n");
+                    }
+                    break;
+                }
+
+            /* End of flash command request */
+            case MAGIC_DFU_DWNLOAD_FINISHED:
+                {
+                    /******* Automaton handling *********/
+
+                    /* checking transition */
+                    if (is_valid_transition(get_task_state(), (uint8_t)MAGIC_DFU_DWNLOAD_FINISHED) != sectrue) {
+                        goto bad_transition;
+                    }
+                    /* updating task state if needed */
+                    uint8_t next_state = get_next_state(get_task_state(), (uint8_t)MAGIC_DFU_DWNLOAD_FINISHED);
+                    if (next_state != 0xff) {
+                        set_task_state(next_state);
+                    }
+
+                    /******** executing transition ******/
+
+#if CRYPTO_DEBUG
+                    printf("receiving EOF from DFUUSB\n");
+#endif
+
+                    /* Here, we voluntary unmap and loose the hability to map the flash (device is released) */
+                    fw_storage_finalize_access();
+
+                    /* Then we acknowledge */
+                    dataplane_command_ack.magic = MAGIC_DFU_WRITE_FINISHED;
+                    dataplane_command_ack.state = SYNC_DONE;
+
+                    ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(struct sync_command), (const char*)&dataplane_command_ack);
+
+                    if (ret != SYS_E_DONE) {
+                        printf("Error ! unable to send back DFU_WRITE_FINISHED to crypto!\n");
+                    }
+                    break;
+                }
+
+            /*  Unsupported command received */
+            default:
+                {
+                    set_task_state(DFUFLASH_STATE_ERROR);
+
+                    /******** executing transition ******/
+
+                    printf("received invalid command from CRYPTO (magic: %d\n", ipc_mainloop_cmd.magic);
+                    ipc_mainloop_cmd.magic = MAGIC_INVALID;
+                    sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(t_ipc_command), (const char*)&ipc_mainloop_cmd);
+                    break;
+
+                }
+        }
+    }
+bad_transition:
+    printf("invalid transition from state %d, magic %x\n", get_task_state(),
+            ipc_mainloop_cmd.magic);
+    set_task_state(DFUFLASH_STATE_ERROR);
+    return;
+}
+
+int _main(uint32_t task_id)
+{
+    e_syscall_ret ret;
+    char *wellcome_msg = "hello, I'm flash";
+    struct sync_command ipc_sync_cmd;
+    uint8_t id;
+    dma_shm_t dmashm_rd;
+    dma_shm_t dmashm_wr;
+
+    dma_shm_t dmashm_flash;
+
+    set_task_state(DFUFLASH_STATE_INIT);
+
+    printf("%s, my id is %x\n", wellcome_msg, task_id);
+
+    ret = sys_init(INIT_GETTASKID, "dfucrypto", &id_dfucrypto);
+    printf("dfucrypto is task %x !\n", id_dfucrypto);
+    ret = sys_init(INIT_GETTASKID, "dfusmart", &id_dfusmart);
+    printf("dfusmart is task %x !\n", id_dfusmart);
+
 
     /*********************************************
      * Declaring DMA Shared Memory with Crypto
@@ -155,6 +362,7 @@ int _main(uint32_t task_id)
     ret = sys_init(INIT_DMA_SHM, &dmashm_wr);
     printf("sys_init returns %s !\n", strerror(ret));
 
+    get_flash_size();
     init_flash_map();
 
     /* now that firmware backend is declared, we have to
@@ -162,6 +370,7 @@ int _main(uint32_t task_id)
      * the written firmware signature at the end */
     dmashm_flash.target = id_dfusmart;
     dmashm_flash.source = task_id;
+
     if (is_in_flip_mode()) {
         dmashm_flash.address = (physaddr_t)firmware_get_flop_base_addr();
     } else if (is_in_flop_mode()) {
@@ -256,6 +465,9 @@ int _main(uint32_t task_id)
     } while (ret == SYS_E_BUSY);
     printf("Crypto informed.\n");
 
+    /* All of initialization and syncrhonisation phase done,
+     * going IDLE */
+    set_task_state(DFUFLASH_STATE_IDLE);
 
     /*******************************************
      * Main read/write loop
@@ -270,146 +482,12 @@ int _main(uint32_t task_id)
      * Main waiting loop. The task main thread is awoken by any external
      * event such as ISR or IPC.
      */
-      // FIXME:
-      uint32_t buffer_count = 0;
-      struct sync_command_data dataplane_command_wr;
-      struct sync_command_data dataplane_command_ack = { 0 };
-      t_ipc_command ipc_mainloop_cmd;
-      memset(&ipc_mainloop_cmd, 0, sizeof(t_ipc_command));
+    main_loop();
 
-      bool flash_is_mapped = false;
-      while (1) {
-          uint8_t id = id_dfucrypto;
-          logsize_t size = sizeof(struct sync_command_data);
-
-          ret = sys_ipc(IPC_RECV_SYNC, &id, &size, (char*)&ipc_mainloop_cmd);
-
-          if (ret != SYS_E_DONE) {
-              continue;
-          }
-
-          switch (ipc_mainloop_cmd.magic) {
-
-
-              case MAGIC_DATA_WR_DMA_REQ:
-                  {
-                      dataplane_command_wr = ipc_mainloop_cmd.sync_cmd_data;
-		      block_num =  (uint16_t)dataplane_command_wr.data.u16[1];
-#if FLASH_DEBUG
-                      printf("!!!!!!!!!!! received DMA write command to FLASH: blocknum:%x size: %x\n",
-                              (uint16_t)dataplane_command_wr.data.u16[1], (uint16_t)dataplane_command_wr.data.u16[0]);
-/*
-                      if (buffer_count < 2) {
-                          printf("received buffer (4 start, 4 end)\n");
-                          hexdump(flash_buf, 4);
-                          hexdump(flash_buf+4092, 4);
-                      }
-*/
-#endif
-#if CRC
-			crc_value = crc32(flash_buf, dataplane_command_wr.data.u16[0], crc_value);
-#if FLASH_DEBUG
-			printf("[CRC32] current crc is %x (chunk %x)\n", crc_value ^ 0xffffffff, block_num);
-#endif
-#endif
-            /* let's write ! */
-            uint32_t bufsize = (uint32_t)dataplane_command_wr.data.u16[0];
-            if (!flash_is_mapped) {
-                fw_storage_prepare_access();
-                flash_is_mapped = true;
-            }
-	    addr = addr_base + (block_num * FLASH_BUF_SIZE);
-#if FLASH_DEBUG
-	    printf("Writing flash @%x, firmware block %d\n", addr, block_num);
-#endif
-            fw_storage_write_buffer(addr, (uint32_t*)flash_buf, bufsize);
-
-                      /*returning the number of bytes read */
-                      dataplane_command_ack.magic = MAGIC_DATA_WR_DMA_ACK;
-                      dataplane_command_ack.data.u16[0] = dataplane_command_wr.data.u16[0];
-                      dataplane_command_ack.data_size = 1;
-
-                      ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(struct sync_command_data), (const char*)&dataplane_command_ack);
-
-                      if (ret != SYS_E_DONE) {
-                          printf("Error ! unable to send back DMA_WR_ACK to crypto!\n");
-                      }
-                      buffer_count++;
-                      break;
-
-                  }
-
-              case MAGIC_DATA_RD_DMA_REQ:
-                  {
-                      uint16_t read_data = 0;
-                      uint32_t prev_total = total_read;
-                      dataplane_command_wr = ipc_mainloop_cmd.sync_cmd_data;
-		      block_num = dataplane_command_wr.data.u16[1];
-#if FLASH_DEBUG
-
-                      printf("!!!!!!!!!!! received DMA read command to FLASH: blocknum:%x size: %x\n",
-                              dataplane_command_wr.data.u16[1], dataplane_command_wr.data.u16[0]);
-#endif
-                      total_read += dataplane_command_wr.data.u16[0];
-                      if (total_read > flash_size) {
-                          /* reinit for next upload if needed */
-                          total_read = 0;
-                          read_data = flash_size - prev_total;
-#if FLASH_DEBUG
-                          printf("end of flash read, residual size is %x\n", read_data);
-#endif
-                      } else {
-                          read_data = dataplane_command_wr.data.u16[0];
-                      }
-                      // read request.... let's read then...
-
-                      /*returning the number of bytes read */
-                      dataplane_command_ack.magic = MAGIC_DATA_RD_DMA_ACK;
-                      dataplane_command_ack.data.u16[0] = read_data;
-                      dataplane_command_ack.data_size = 1;
-
-                      ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(struct sync_command_data), (const char*)&dataplane_command_ack);
-
-                      if (ret != SYS_E_DONE) {
-                          printf("Error ! unable to send back DMA_WR_ACK to crypto!\n");
-                      }
-                    break;
-
-                  }
-
-            case MAGIC_DFU_DWNLOAD_FINISHED:
-                {
-#if CRYPTO_DEBUG
-                    printf("receiving EOF from DFUUSB\n");
-#endif
-
-                    fw_storage_finalize_access();
-                    dataplane_command_ack.magic = MAGIC_DFU_WRITE_FINISHED;
-                    dataplane_command_ack.state = SYNC_DONE;
-
-                    ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(struct sync_command), (const char*)&dataplane_command_ack);
-
-                    if (ret != SYS_E_DONE) {
-                        printf("Error ! unable to send back DFU_WRITE_FINISHED to crypto!\n");
-                    }
-
-                    break;
-                }
-
-
-              default:
-                  {
-                      printf("received invalid command from CRYPTO (magic: %d\n", ipc_mainloop_cmd.magic);
-                      ipc_mainloop_cmd.magic = MAGIC_INVALID;
-                      sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(t_ipc_command), (const char*)&ipc_mainloop_cmd);
-                      break;
-
-                  }
-          }
-      }
-
+    while (1);
     return 0;
 err:
+    while (1);
     return 1;
 }
 
