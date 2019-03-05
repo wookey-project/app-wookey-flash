@@ -27,6 +27,11 @@ uint32_t total_read = 0;
 /* NOTE: alignment due to DMA */
 __attribute__((aligned(4))) uint8_t flash_buf[FLASH_BUF_SIZE] = { 0 };
 
+/* Do we check CRC value of each successive storage block ?
+ * The final CRC calculation should be equal to the firmware image global CRC
+ * This is a debug helper feature, depending on FLASH_DEBUG.
+ * INFO: The CRC calculation is Linux CRC compatible
+ */
 #define CRC 0
 
 #ifdef CRC
@@ -40,6 +45,10 @@ static uint8_t id_dfusmart;
 static uint32_t flash_size = 0;
 static physaddr_t addr_base = 0;
 
+/*
+ * Let's select which part of the flash device is required by the DFU storage
+ * process. We need the other bank and the cfg registers to be mapped.
+ */
 void init_flash_map(void)
 {
     if (is_in_flip_mode()) {
@@ -309,6 +318,7 @@ static void main_loop(void)
                 }
         }
     }
+    /* bad transition case: leaving the main loop with error */
 bad_transition:
     printf("invalid transition from state %d, magic %x\n", get_task_state(),
             ipc_mainloop_cmd.magic);
