@@ -53,7 +53,7 @@ void init_flash_map(void)
 {
     if (is_in_flip_mode()) {
         t_device_mapping devmap = {
-#if CONFIG_WOOKEY || CONFIG_WOOKEY2
+#if CONFIG_WOOKEY
             .map_flip_shr = 0,
             .map_flip = 0,
             .map_flop_shr = 0,
@@ -67,7 +67,7 @@ void init_flash_map(void)
 # endif
 #endif
             .map_ctrl = 1,
-#if CONFIG_WOOKEY || CONFIG_WOOKEY2
+#if CONFIG_WOOKEY
             .map_ctrl_2 = 0,
 #endif
             .map_system = 0,
@@ -82,7 +82,7 @@ void init_flash_map(void)
     } else if (is_in_flop_mode()) {
         // mapping flip
         t_device_mapping devmap = {
-#if CONFIG_WOOKEY || CONFIG_WOOKEY2
+#if CONFIG_WOOKEY
             .map_flip_shr = 0,
             .map_flip = 1,
             .map_flop_shr = 0,
@@ -96,7 +96,7 @@ void init_flash_map(void)
 # endif
 #endif
             .map_ctrl = 1,
-#if CONFIG_WOOKEY || CONFIG_WOOKEY2
+#if CONFIG_WOOKEY
             .map_ctrl_2 = 0,
 #endif
             .map_system = 0,
