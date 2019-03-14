@@ -7,6 +7,7 @@
 
 #include "api/syscall.h"
 #include "api/print.h"
+#include "api/string.h"
 #include "wookey_ipc.h"
 #include "libfw.h"
 #include "main.h"
