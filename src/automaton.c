@@ -1,7 +1,8 @@
 #include "automaton.h"
 #include "main.h"
 #include "wookey_ipc.h"
-#include "api/print.h"
+#include "api/stdio.h"
+#include "api/nostd.h"
 
 static volatile t_dfuflash_state task_state = DFUFLASH_STATE_INIT;
 
