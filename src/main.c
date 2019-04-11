@@ -13,8 +13,26 @@
 #include "libfw.h"
 #include "main.h"
 #include "automaton.h"
+#include "generated/led1.h"
 
 uint32_t total_read = 0;
+
+/* The flash task drives the blue LED when writing chunks */
+static inline void led_on(void)
+{
+#if CONFIG_WOOKEY
+    /* toggle led ON */
+    sys_cfg(CFG_GPIO_SET, (uint8_t)((led1_dev_infos.gpios[LED1].port << 4) + led1_dev_infos.gpios[LED1].pin), 1);
+#endif
+}
+static inline void led_off(void)
+{
+#if CONFIG_WOOKEY
+    /* toggle led OFF */
+    sys_cfg(CFG_GPIO_SET, (uint8_t)((led1_dev_infos.gpios[LED1].port << 4) + led1_dev_infos.gpios[LED1].pin), 0);
+#endif
+}
+
 
 /*
  * We use the local -fno-stack-protector flag for main because
@@ -198,7 +216,9 @@ static void main_loop(void)
 #if FLASH_DEBUG
                     printf("Writing flash @%x, firmware block %d\n", addr, block_num);
 #endif
+		    led_on();
                     fw_storage_write_buffer(addr, (uint32_t*)flash_buf, bufsize);
+		    led_off();
 
                     /*returning the number of bytes read */
                     dataplane_command_ack.magic = MAGIC_DATA_WR_DMA_ACK;
@@ -253,8 +273,8 @@ static void main_loop(void)
                     /* read request.... by now not implemented as it is a security risk,
                      * we transparently return as if we have read data, without updating the
                      * buffer.
-                     * INFO: the libdfu support UPLOAD mode, but dfuflash is keeped voluntary
-                     * simplier by now */
+                     * INFO: the libdfu support UPLOAD mode, but dfuflash is keept voluntarily
+                     * simple and basic by now */
 
                     /*returning the number of bytes read */
                     dataplane_command_ack.magic = MAGIC_DATA_RD_DMA_ACK;
@@ -348,6 +368,30 @@ int _main(uint32_t task_id)
     ret = sys_init(INIT_GETTASKID, "dfusmart", &id_dfusmart);
     printf("dfusmart is task %x !\n", id_dfusmart);
 
+    /*********************************************
+     * Declaring flash read/write access LED
+     ********************************************/
+#if CONFIG_WOOKEY
+    // led info
+    //
+    int led_desc;
+    device_t led_dev;
+    printf("Declaring flash backend LED device\n");
+    memset(&led_dev, 0, sizeof(device_t));
+    strncpy(led_dev.name, "flash_led", sizeof("flash_led"));
+    led_dev.gpio_num = 1;
+    led_dev.gpios[0].mask = GPIO_MASK_SET_MODE | GPIO_MASK_SET_PUPD | GPIO_MASK_SET_SPEED;
+    led_dev.gpios[0].kref.port = led1_dev_infos.gpios[LED1].port;
+    led_dev.gpios[0].kref.pin = led1_dev_infos.gpios[LED1].pin;
+    led_dev.gpios[0].pupd = GPIO_NOPULL;
+    led_dev.gpios[0].mode = GPIO_PIN_OUTPUT_MODE;
+    led_dev.gpios[0].speed = GPIO_PIN_HIGH_SPEED;
+
+    ret = sys_init(INIT_DEVACCESS, &led_dev, &led_desc);
+    if (ret != 0) {
+        printf("Error while declaring LED GPIO device: %d\n", ret);
+    }
+#endif
 
     /*********************************************
      * Declaring DMA Shared Memory with Crypto
@@ -408,8 +452,10 @@ int _main(uint32_t task_id)
     ret = sys_init(INIT_DONE);
     printf("sys_init returns %s !\n", strerror(ret));
 
+    /* Set the LED off by default */
+    led_off();
     /*******************************************
-     * let's syncrhonize with other tasks
+     * let's synchronize with other tasks
      *******************************************/
     logsize_t size = sizeof(struct sync_command);
 
