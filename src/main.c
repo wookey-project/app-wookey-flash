@@ -334,7 +334,10 @@ static void main_loop(void)
 
                     printf("received invalid command from CRYPTO (magic: %d\n", ipc_mainloop_cmd.magic);
                     ipc_mainloop_cmd.magic = MAGIC_INVALID;
-                    sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(t_ipc_command), (const char*)&ipc_mainloop_cmd);
+                    ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(t_ipc_command), (const char*)&ipc_mainloop_cmd);
+                    if(ret != SYS_E_DONE){
+                        printf("Error ! unable to send back DFUFLASH_STATE_ERROR to crypto!\n");
+                    }
                     break;
 
                 }
@@ -465,12 +468,15 @@ int _main(uint32_t task_id)
 
     do {
       ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, size, (char*)&ipc_sync_cmd);
-    } while (ret == SYS_E_BUSY);
+    } while (ret != SYS_E_DONE);
 
     /* Now wait for Acknowledge from Smart */
     id = id_dfucrypto;
 
     ret = sys_ipc(IPC_RECV_SYNC, &id, &size, (char*)&ipc_sync_cmd);
+    if(ret != SYS_E_DONE){
+        goto err;
+    }
     if (   ipc_sync_cmd.magic == MAGIC_TASK_STATE_RESP
         && ipc_sync_cmd.state == SYNC_ACKNOWLEDGE) {
         printf("dfucrypto has acknowledge end_of_init, continuing\n");
@@ -486,6 +492,9 @@ int _main(uint32_t task_id)
     size = sizeof(struct sync_command);
 
     ret = sys_ipc(IPC_RECV_SYNC, &id, &size, (char*)&ipc_sync_cmd);
+    if(ret != SYS_E_DONE){
+        goto err;
+    }
 
     if (   ipc_sync_cmd.magic == MAGIC_TASK_STATE_CMD
         && ipc_sync_cmd.state == SYNC_READY) {
@@ -500,7 +509,7 @@ int _main(uint32_t task_id)
     size = sizeof(struct sync_command);
     do {
       ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, size, (char*)&ipc_sync_cmd);
-    } while (ret == SYS_E_BUSY);
+    } while (ret != SYS_E_DONE);
     // take some time to finish all sync ipc...
     sys_sleep(1000, SLEEP_MODE_INTERRUPTIBLE);
 
@@ -520,7 +529,7 @@ int _main(uint32_t task_id)
     printf("informing dfucrypto about DMA SHM...\n");
     do {
       ret = sys_ipc(IPC_SEND_SYNC, id_dfucrypto, sizeof(struct dmashm_info), (char*)&dmashm_info);
-    } while (ret == SYS_E_BUSY);
+    } while (ret != SYS_E_DONE);
     printf("Crypto informed.\n");
 
     /* All of initialization and syncrhonisation phase done,
