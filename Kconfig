@@ -10,6 +10,8 @@ config APP_DFUFLASH
   ---help---
     Say y if you want to embbed DFUFLASH custom application.
 
+if APP_DFUFLASH
+
 config APP_DFUFLASH_FW
   bool "Flash App for firmware mode"
   depends on APP_DFUFLASH
@@ -179,5 +181,7 @@ endmenu
 
 
 endmenu
+
+endif
 
 endmenu
