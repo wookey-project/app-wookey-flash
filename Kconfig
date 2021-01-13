@@ -57,6 +57,16 @@ config APP_DFUFLASH_PRIO
     When using priority and RMA scheduling, please take care to yield()
     as much as possible to avoid deny of service to lower priority tasks
 
+config APP_DFUFLASH_USE_BKUP_SRAM
+  bool "Dfuflash App Backup SRAM usage for symmetric overencryption key"
+  depends on APP_DFUFLASH
+  depends on FIRMWARE_DFU
+  depends on STM32F4
+  default y
+  ---help---
+    Say y if you want to use Backup SRAM for overencryption flash key storage (this is better for
+    firmware security and hence put tu y as default).
+
 menu "Permissions"
     visible if APP_DFUFLASH
 
