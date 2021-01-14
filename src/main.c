@@ -9,13 +9,22 @@
 #include "libc/stdio.h"
 #include "libc/nostd.h"
 #include "libc/string.h"
+#include "libc/random.h"
 #include "wookey_ipc.h"
 #include "libfw.h"
 #include "main.h"
 #include "automaton.h"
 #include "generated/led1.h"
+/* Include the private overencryption key from
+ * the private folder.
+ */
+#include "symmetric_overencrypt_dfu_key_iv.h"
+/* Include the AES header */
+#include "aes.h"
+/* Flash key mapping */
+#include "generated/bsram_flashkey.h"
 
-uint32_t total_read = 0;
+static volatile uint32_t total_read = 0;
 
 /* The flash task drives the blue LED when writing chunks */
 static inline void led_on(void)
@@ -134,14 +143,173 @@ void init_flash_map(void)
 static void get_flash_size(void)
 {
     if (is_in_flip_mode()) {
-        addr_base = 0x08120000;
+        addr_base = CONFIG_USR_LIB_FIRMWARE_FLOP_ADDR;
         flash_size = firmware_get_flop_size();
     } else if (is_in_flop_mode()) {
-        addr_base = 0x08020000;
+        addr_base = CONFIG_USR_LIB_FIRMWARE_FLIP_ADDR;
         flash_size = firmware_get_flip_size();
     } else {
         printf("neither in flip or flop mode !!! leaving !\n");
     }
+}
+
+/* Backup SRAM handling to get the flash key */
+#ifdef CONFIG_APP_DFUFLASH_USE_BKUP_SRAM
+/* Map and unmap the Backup SRAM */
+static volatile bool bsram_flashkey_is_mapped = false;
+static volatile int  dev_bsram_flashkey_desc = 0;
+static int bsram_flashkey_init(void){
+    const char *name = "bsram-flashkey";
+    e_syscall_ret ret = 0;
+
+    device_t dev;
+    memset((void*)&dev, 0, sizeof(device_t));
+    strncpy(dev.name, name, sizeof (dev.name));
+    dev.address = bsram_flashkey_dev_infos.address;
+    dev.size = bsram_flashkey_dev_infos.size;
+    dev.map_mode = DEV_MAP_VOLUNTARY;
+
+    dev.irq_num = 0;
+    dev.gpio_num = 0;
+    int dev_bsram_flashkey_desc_ = dev_bsram_flashkey_desc;
+    ret = sys_init(INIT_DEVACCESS, &dev, (int*)&dev_bsram_flashkey_desc_);
+    if(ret != SYS_E_DONE){
+        printf("Error: Backup SRAM flash key, sys_init error!\n");
+        goto err;
+    }
+    dev_bsram_flashkey_desc = dev_bsram_flashkey_desc_;
+
+    return 0;
+err:
+    return -1;
+}
+
+static int bsram_flashkey_map(void){
+    if(bsram_flashkey_is_mapped == false){
+        e_syscall_ret ret;
+        ret = sys_cfg(CFG_DEV_MAP, dev_bsram_flashkey_desc);
+        if (ret != SYS_E_DONE) {
+            printf("Unable to map Backup SRAM flash key!\n");
+            goto err;
+        }
+        bsram_flashkey_is_mapped = true;
+    }
+
+    return 0;
+err:
+    return -1;
+}
+
+static int bsram_flashkey_unmap(void){
+    if(bsram_flashkey_is_mapped){
+        e_syscall_ret ret;
+        ret = sys_cfg(CFG_DEV_UNMAP, dev_bsram_flashkey_desc);
+        if (ret != SYS_E_DONE) {
+            printf("Unable to unmap Backup SRAM flash key!\n");
+            goto err;
+        }
+        bsram_flashkey_is_mapped = false;
+    }
+
+    return 0;
+err:
+    return -1;
+}
+#endif
+
+
+/* Our AES-CTR key */
+static uint8_t aes_ctr_decrypt_key[16] = { 0 };
+/* Our AES-CTR IV */
+static uint8_t aes_ctr_decrypt_iv[16] = { 0 };
+static int decrypt_load_keys(void){
+    if(sizeof(symmetric_overencrypt_dfu_key_iv) < 32){
+        goto err;
+    }
+
+#ifdef CONFIG_APP_DFUFLASH_USE_BKUP_SRAM
+    /* Map the Backup SRAM for flash key */
+    if(bsram_flashkey_map()){
+        goto err;
+    }
+#endif
+
+    /* Copy our AES-CTR key and IV in local SRAM once and for all */
+    memcpy(aes_ctr_decrypt_key, &(symmetric_overencrypt_dfu_key_iv[0]), 16);
+    memcpy(aes_ctr_decrypt_iv, &(symmetric_overencrypt_dfu_key_iv[16]), 16);
+
+#ifdef CONFIG_APP_DFUFLASH_USE_BKUP_SRAM
+    /* Unmap the Backup SRAM for flash key */
+    if(bsram_flashkey_unmap()){
+        goto err;
+    }
+#endif  
+    return 0;
+err:
+#ifdef CONFIG_APP_DFUFLASH_USE_BKUP_SRAM
+    /* Unmap the Backup SRAM for flash key */
+    if(bsram_flashkey_unmap()){
+        goto err;
+    }
+#endif
+    return -1;
+}
+
+static volatile aes_context aes_context_flash_ctr;
+static int decrypt_init(uint16_t chunk_num){    
+    /* Initialize our AES-CTR context */
+    uint8_t iv[sizeof(aes_ctr_decrypt_iv)] = { 0 };
+    memcpy(iv, aes_ctr_decrypt_iv, sizeof(iv));
+    add_iv(iv, chunk_num);
+    if(aes_init((aes_context*)&aes_context_flash_ctr, aes_ctr_decrypt_key, AES128, iv, CTR, AES_DECRYPT, AES_SOFT_ANSSI_MASKED, NULL, NULL, -1, -1)){
+        printf("Flash AES init error!\n");
+        goto err;
+    }
+
+    return 0;
+err:
+    return -1;
+}
+
+static void decrypt_cleanup_keys(void){
+    memset(aes_ctr_decrypt_key, 0, sizeof(aes_ctr_decrypt_key));
+    memset(aes_ctr_decrypt_iv, 0, sizeof(aes_ctr_decrypt_iv));
+    memset((void*)&aes_context_flash_ctr, 0, sizeof(aes_context_flash_ctr));
+#ifdef CONFIG_APP_DFUFLASH_USE_BKUP_SRAM
+    /* In case of BSRAM usage, we override the const qualifier on purpose here! */
+    memset((uint8_t*)symmetric_overencrypt_dfu_key_iv, 0, sizeof(symmetric_overencrypt_dfu_key_iv));
+#endif
+    return;
+}
+
+static volatile uint32_t last_chunk_num = 0;
+static int decrypt_chunk(uint8_t *chunk, uint32_t chunk_size, uint16_t chunk_num)
+{
+    /* [RB] NOTE: we limit oracle decryption here.
+     */
+    if((uint32_t)chunk_num != (last_chunk_num + 1)){
+        if(decrypt_init(chunk_num)){
+            goto err;
+        }
+    }
+    
+    /* [RB] NOTE: we switch random generation to non secure here mainly
+     * for *performance* reasons! This should however not have much impact
+     * on security, since we still rely on the platform TRNG.
+     */
+    random_secure = SEC_RANDOM_NONSECURE;
+    if(aes_exec((aes_context*)&aes_context_flash_ctr, chunk, chunk, chunk_size, -1, -1)){
+        random_secure = SEC_RANDOM_SECURE;
+        printf("Flash AES exec error!\n");
+        goto err;
+    }
+    random_secure = SEC_RANDOM_SECURE;
+
+    last_chunk_num = chunk_num;
+
+    return 0;
+err:
+    return -1;
 }
 
 
@@ -161,6 +329,11 @@ static void main_loop(void)
 
     memset(&ipc_mainloop_cmd, 0, sizeof(t_ipc_command));
 
+    /* Flash decrypt load keys */
+    if(decrypt_load_keys()){
+        goto bad_transition;
+    }
+ 
     while (1) {
         /* initialize logsize to current binary buffer size */
         logsize_t size = sizeof(struct sync_command_data);
@@ -208,14 +381,21 @@ static void main_loop(void)
 #endif
                     /* let's write ! */
                     uint32_t bufsize = (uint32_t)dataplane_command_wr.data.u16[0];
-                    if (!flash_is_mapped) {
-                        fw_storage_prepare_access();
-                        flash_is_mapped = true;
-                    }
                     addr = addr_base + (block_num * FLASH_BUF_SIZE);
 #if FLASH_DEBUG
                     printf("Writing flash @%x, firmware block %d\n", addr, block_num);
 #endif
+
+                    if(decrypt_chunk(flash_buf, bufsize, block_num)){
+                        goto bad_transition;
+                    }
+
+                    if (!flash_is_mapped) {
+                        if(fw_storage_prepare_access()){
+                            goto bad_transition;
+                        }
+                        flash_is_mapped = true;
+                    }
 		    led_on();
                     fw_storage_write_buffer(addr, (uint32_t*)flash_buf, bufsize);
 		    led_off();
@@ -310,7 +490,13 @@ static void main_loop(void)
                     printf("receiving EOF from DFUUSB\n");
 #endif
 
-                    /* Here, we voluntary unmap and loose the hability to map the flash (device is released) */
+                    if (!flash_is_mapped) {
+                        if(fw_storage_prepare_access()){
+                            goto bad_transition;
+                        }
+                        flash_is_mapped = true;
+                    }
+                    /* Here, we voluntary unmap and loose the ability to map the flash (device is released) */
                     fw_storage_finalize_access();
 
                     /* Then we acknowledge */
@@ -345,6 +531,8 @@ static void main_loop(void)
     }
     /* bad transition case: leaving the main loop with error */
 bad_transition:
+    /* Erase our decrypt keys */
+    decrypt_cleanup_keys();
     printf("invalid transition from state %d, magic %x\n", get_task_state(),
             ipc_mainloop_cmd.magic);
     set_task_state(DFUFLASH_STATE_ERROR);
@@ -446,6 +634,12 @@ int _main(uint32_t task_id)
     ret = sys_init(INIT_DMA_SHM, &dmashm_flash);
     printf("sys_init returns %s !\n", strerror(ret));
 
+#ifdef CONFIG_APP_DFUFLASH_USE_BKUP_SRAM
+    /* Declare our Backup SRAM to get our flash key */ 
+    if(bsram_flashkey_init()){
+        goto err;
+    }
+#endif
 
     /*******************************************
      * End of init
@@ -543,7 +737,6 @@ int _main(uint32_t task_id)
      *******************************************/
 
     printf("FLASH main loop starting\n");
-
 
     /*
      * Main waiting loop. The task main thread is awoken by any external
