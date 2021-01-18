@@ -62,6 +62,7 @@ config APP_DFUFLASH_USE_BKUP_SRAM
   depends on APP_DFUFLASH
   depends on FIRMWARE_DFU
   depends on STM32F4
+  select LOADER_BSRAM_FLASH_KEY
   default y
   ---help---
     Say y if you want to use Backup SRAM for overencryption flash key storage (this is better for
